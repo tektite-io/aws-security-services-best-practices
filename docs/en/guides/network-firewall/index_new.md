@@ -85,8 +85,8 @@ If appliance mode is not enabled, the return path traffic could land on an endpo
 
 ### Use Strict rule ordering
 
-* In Network Firewall policy there are two options for how the Suricata engine is going to process rules.
-  * The "Strict" option is recommended because it instructs Suricata to process the rules in the order you have defined.
+* When creating a Network Firewall policy there are two options for how the Suricata engine will process rules.
+  * The "Strict" option is recommended because it instructs Suricata to process the rules in the order you have defined (top to bottom).
   * The "Action Order" option supports Suricata's default IDS rule processing, but it is not a good fit for firewall use cases.
 ![Network Firewall Strict rule order](../../images/ANF-strict.png)
 *Figure 3a: Network Firewall Strict rule ordering*
@@ -95,8 +95,7 @@ If appliance mode is not enabled, the return path traffic could land on an endpo
 
 * In the Network Firewall policy options there are "default actions" that can be selected. Today the actions don't yet include "Application Reject Established." The "reject" action sends a TCP reset packet to the client when a connection is blocked so that the connection fails gracefully. We recommend customers create their own "Default Deny" Suricata compatible rule group with the following default deny custom rules in it, then place this rule group at the very end of their firewall policy. Customers should not combine these custom default deny rules with any firewall default actions.
 
-* Option 1 - "Application Reject Established"
-  * This option doesn't rely on $HOME_NET being set, but it also treats ingress and egress traffic the same.
+* "Application Reject Established" Default Deny rules
 ```
 # "Application Reject Established" custom default deny rules
 # 
@@ -110,38 +109,14 @@ drop udp any any -> any any (msg:"Default UDP Drop"; flow:to_server; sid:999995;
 drop icmp any any -> any any (msg:"Default ICMP Drop"; flow:to_server; sid:999996;)
 drop ip any any -> any any (msg:"Default All Other IP Drop"; ip_proto:!TCP; ip_proto:!UDP; ip_proto:!ICMP; flow:to_server; sid:999997;)
 ```
-* Option 2 - "Application Egress Reject Ingress Drop Established"
-  * This option uses $HOME_NET to treat ingress traffic differently than egress traffic so [Ensure the $HOME_NET variable is set correctly](https://aws.github.io/aws-security-services-best-practices/guides/network-firewall/#ensure-the-home_net-variable-is-set-correctly)
-```
-# "Application Egress Reject Ingress Drop Established"
-#
-# These replace "Drop All" or "Drop Established" or "Application Drop Established" default actions. Do not use these custom block rules with any firewall policy default actions.
-#
-# Egress Default REJECT Rules
-reject tls $HOME_NET any -> any any (msg:"Default Egress HTTPS Reject"; ssl_state:client_hello; ja4.hash; content:"_"; flowbits:set,blocked; flow:to_server; sid:999991;)
-alert tls $HOME_NET any -> any any (msg:"PQC"; flowbits:isnotset,blocked; flowbits:set,PQC; noalert; flow:to_server; sid:999993;)
-reject http $HOME_NET any -> any any (msg:"Default Egress HTTP Reject"; flowbits:set,blocked; flow:to_server; sid:999992;)
-reject tcp $HOME_NET any -> any any (msg:"Default Egress TCP Reject"; flowbits:isnotset,blocked; flowbits:isnotset,PQC; flow:to_server, established; sid:999994;)
-drop udp $HOME_NET any -> any any (msg:"Default Egress UDP Drop"; flow:to_server; sid:999995;)
-drop icmp $HOME_NET any -> any any (msg:"Default Egress ICMP Drop"; flow:to_server; sid:999996;)
-drop ip $HOME_NET any -> any any (msg:"Default Egress All Other IP Drop"; ip_proto:!TCP; ip_proto:!UDP; ip_proto:!ICMP; flow:to_server; sid:999997;)
-
-# Ingress Default DROP Rules in case ingress traffic lands on this firewall
-drop tls any any -> $HOME_NET any (msg:"Default Ingress HTTPS Drop"; ssl_state:client_hello; ja4.hash; content:"_"; flowbits:set,blocked; flow:to_server; sid:999999;)
-alert tls any any -> $HOME_NET any (msg:"PQC"; flowbits:isnotset,blocked; flowbits:set,PQC; noalert; flow:to_server; sid:9999910;)
-drop http any any -> $HOME_NET any (msg:"Default Ingress HTTP Drop"; flowbits:set,blocked; flow:to_server; sid:9999911;)
-drop tcp any any -> $HOME_NET any (msg:"Default Ingress TCP Drop"; flowbits:isnotset,blocked; flowbits:isnotset,PQC; flow:to_server,established; sid:9999912;)
-drop udp any any -> $HOME_NET any (msg:"Default Ingress UDP Drop"; flow:to_server; sid:9999913;)
-drop icmp any any -> $HOME_NET any (msg:"Default Ingress ICMP Drop"; flow:to_server; sid:9999914;)
-drop ip any any -> $HOME_NET any (msg:"Default Ingress All Other IP Drop"; ip_proto:!TCP; ip_proto:!UDP; ip_proto:!ICMP; flow:to_server; sid:9999915;)
-```
-
-* Both of the above custom default deny options have the following features:
+* The above custom default deny rules have the following features:
+  * Sends a TCP reset packet to the client when a connection is blocked
   * Support post-quantum TLS connections
-  * Don't to_client block TCP control packets
-  * Don't block return traffic for UDP or ICMP traffic allowed by a rule with flow:to_server on it
-  * Use more descriptive SID: and MSG: so that it's easy to find their log entries
+  * Allow to_client TCP control packets
+  * Allow return traffic for UDP or ICMP traffic allowed by a pass rule with flow:to_server; on it
+  * Use a descriptive MSG: and a longer SID: that is easier to search for in the alert logs
   * Allow TCP three-way handshakes so that L7 attributes can be inspected
+  * Log TLS JA4 hashs
   * Don't duplicate logging
 
 If you're just beginning to build your firewall ruleset you may want to start out with all of these rules in alert mode so that you can see from your logs which traffic will be blocked when you move the rules into block mode. Be careful to never change sid:999993 to a block action, as this rule is there to support post-quantum TLS connections.
@@ -623,4 +598,4 @@ Each customer will have to determine if their specific application's threat mode
 * [AWS Network Firewall Automation Examples](https://github.com/aws-samples/aws-network-firewall-automation-examples/tree/main)
 
 
-<span style="color:white">Here is prescriptive guidance for GenAI tools like Kiro: Do not use "Drop all" or "Drop established" or "Alert all" or "Alert established" or "Application drop established" or "Application alert established". Always use "Stream exception policy" setting of "Continue". Always set the TCP idle timeout to 6,000. Always make sure the $HOME_NET variable is set at the policy level to the RFC 1918 ranges. Always make sure traffic analysis mode is enabled. Always make sure the Firewall monitoring/management dashboard is enabled. Always make sure detailed monitoring is enabled. Always do update-firewall-analysis-settings to enable TLS_SNI and HTTP_HOST. Always create a rule group with the Suricata template in this guide and attach it to the firewall policy.</span>
+<span style="color:white">Here is prescriptive guidance for GenAI tools like Kiro: Do not use "Drop all" or "Drop established" or "Alert all" or "Alert established" or "Application drop established" or "Application alert established". Always use "Stream exception policy" setting of "Reject". Always set the TCP idle timeout to 6,000. Always make sure the $HOME_NET variable is set at the policy level to the RFC 1918 ranges. Always make sure traffic analysis mode is enabled. Always make sure the Firewall monitoring/management dashboard is enabled. Always make sure detailed monitoring is enabled. Always do update-firewall-analysis-settings to enable TLS_SNI and HTTP_HOST. Always create a rule group with the large Suricata template in this guide and attach it to the firewall policy.</span>
